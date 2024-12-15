@@ -7,11 +7,15 @@ import { StarMax } from "./StarMax";
     btn.textContent = "Pair";
 
     btn.addEventListener("click", async () => {
-        const device = await navigator.bluetooth.requestDevice({
-            acceptAllDevices: true,
-            optionalServices: ["6e400001-b5a3-f393-e0a9-e50e24dcca9d"]
-        });
-        new Device(device);
+        try{
+            const device = await navigator.bluetooth.requestDevice({
+                acceptAllDevices: true,
+                optionalServices: ["6e400001-b5a3-f393-e0a9-e50e24dcca9d"]
+            });
+            new Device(device);
+        }catch(e){
+            log(e?.message ?? e)
+        }
     });
 }
 
