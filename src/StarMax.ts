@@ -1,17 +1,28 @@
-import { BufferReader } from "protobufjs";
 import { Crc16 } from "./Crc16";
-import { Type, TypeById, TypeByName } from "./types";
-
-type Types = TypeById[keyof TypeById];
-type EventCallback<T extends Types> = (obj: T, data: Uint8Array) => void;
+import HeartRate from "./types/HeartRate";
+import Pair from "./types/Pair";
+import SetTime from "./types/SetTime";
+import SportHistory from "./types/SportHistory";
+import State from "./types/State";
 
 export class StarMax {
+    private listeners = new Map<string, EventCallback<any>[] | undefined>();
 
-    static types = TypeByName
+    constructor(
+        private write: BluetoothRemoteGATTCharacteristic,
+        private notify: BluetoothRemoteGATTCharacteristic
+    ) {
+        notify.addEventListener("characteristicvaluechanged", (ev) => {
+            const array = (ev.target as any).value;
+            if (!(array instanceof DataView))
+                throw new Error("ds")
+            let value = new Uint8Array(array.buffer);
+            console.log("incoming", value.toString());
+            this._notify(value)
+        })
+    }
 
-    private listeners = new Map<Types, EventCallback<any>[] | undefined>();
-
-    public notify(rawBuffer: Uint8Array) {
+    _notify(rawBuffer: Uint8Array) {
         if (rawBuffer[0] != 218)
             throw new Error("not the start or garbage");//TODO merge data, see: AbstractStarmaxNotify.notify
 
@@ -33,16 +44,17 @@ export class StarMax {
             throw new Error("No type");
         }
 
-        const instance = new type();
-        if (!instance.deserialize) {
-            throw new Error("Cannot deserialize");
-        }
-
-        console.log(instance.deserialize(data));
-        //TODO send event
+        const result = type.deserialize(data);
+        
+        this.listeners.get(type.name)?.forEach(f=>{
+            f(result,data);
+        });
+        this.listeners.get("*")?.forEach(f=>{
+            f(result,data);
+        });
     }
 
-    on<T extends Types>(type: T, callback: EventCallback<T>): () => void {
+    on<T extends keyof TypeByName>(type: T | "*", callback: EventCallback<TypeByName[T]>): () => void {
         let array = this.listeners.get(type);
         if (array) {
             array.push(callback);
@@ -58,7 +70,7 @@ export class StarMax {
         }
     }
 
-    once<T extends Types>(type: T, callback: EventCallback<T>): () => void {
+    once<T extends keyof TypeByName>(type: T, callback: EventCallback<TypeByName[T]>): () => void {
         const remove = this.on(type, (...args) => {
             callback(...args);
             remove();
@@ -66,11 +78,61 @@ export class StarMax {
         return remove;
     }
 
-    static createRequest(reqId: number, data?: number[]) {
-        const length = data?.length ?? 0;
-        const input = new Uint8Array([218, reqId, length & 255, length >> 8 & 255, ...data]);
-        return StarMax.merge(input, StarMax.int2byte(Crc16.calculate(input), 2))
+    onceAsync<T extends keyof TypeByName>(type: T): Promise<TypeByName[T]> {
+        return new Promise((resolve)=>{
+            const remove = this.on(type, (...args) => {
+                resolve(args[0]);
+                remove();
+            });
+        })
     }
+
+    private sendRequest(reqId: number, data: number[] = []) {
+        const length = data?.length;
+        const input = new Uint8Array([218, reqId, length & 255, length >> 8 & 255, ...data]);
+        const req =  StarMax.merge(input, StarMax.int2byte(Crc16.calculate(input), 2));
+        return this.write.writeValueWithoutResponse(req);
+    }
+
+    //// Request section
+    //Look in StarMaxSend.java for reference
+
+    /**
+     * Optional, will show a pairing screen
+     * @returns 
+     */
+    pair(){
+        this.sendRequest(1,[1]);
+        return this.onceAsync("Pair")
+    }
+
+    getState(){
+        this.sendRequest(2);
+        return this.onceAsync("State")
+    }
+
+    setTime(date = new Date()){
+        const year = date.getFullYear();
+        const values = [
+            year & 0xFF,           // Lower byte of the year
+            (year >> 8) & 0xFF,    // Upper byte of the year
+            date.getMonth() + 1, // Month (0-based in JS, so +1 for 1-based)
+            date.getDate(),    // Day of the month
+            date.getHours(),   // Hours (24-hour format)
+            date.getMinutes(), // Minutes
+            date.getSeconds(), // Seconds
+            date.getTimezoneOffset() / -60 // Timezone offset in hours (negated)
+        ];
+        this.sendRequest(8, values);
+        return this.onceAsync("SetTime")
+    }
+
+    getSportHistory(){
+        this.sendRequest(97,[0]);
+        return this.onceAsync("SportHistory")
+    }
+
+    //// Helper section
 
     static byteArray2Sum(b: Uint8Array): number {
         let sum = 0;
@@ -116,5 +178,182 @@ export class StarMax {
     }
 }
 
+////
 
+const TypeDefs = [
+    State,Pair,SetTime,SportHistory,HeartRate
+] as const
+type TypeDefs = typeof TypeDefs;
 
+const TypeById = TypeDefs.reduce((a,v)=>{
+    a[v.opId] = v
+    return a;
+},{} as Record<number,TypeDefs[number]>)
+
+////
+
+type Types = ReturnType<TypeDefs[number]["deserialize"]>;
+
+type NumericKeys<T> = Exclude<keyof T, keyof any[]>;
+type TypeByName = {
+    [key in NumericKeys<TypeDefs> as TypeDefs[key]["name"]]: ReturnType<TypeDefs[key]["deserialize"]>
+};
+
+type EventCallback<T extends Types> = (obj: T, data: Uint8Array) => void;
+
+type Requests = Record<string, (this: StarMax) => Promise<any>>;
+type TypeDef<N extends string, R extends Requests, T> = {
+    name: N,
+    opId: number,
+    deserialize(data: Uint8Array): T
+};
+export function createType<N extends string, R extends Requests, T>(config: TypeDef<N, R, T>) {
+    return config;
+}
+
+/*
+case 69:
+    return this.notifyNfcCardStatusInfo(data);
+case 70:
+    return this.notifyNfcM1Info(data);
+case -127:
+    return this.notifyPair(data);
+case -126:
+    return this.notifySetState(data);
+case 3:
+    return this.notifyFindPhone(data);
+case -125:
+    return this.notifyFindDevice(data);
+case 4:
+    return this.notifyCameraControl(data);
+case -124:
+    return this.notifyCameraControl(data);
+case 5:
+    return this.notifyPhoneControl(data);
+case -123:
+    return this.notifyPhoneControl(data);
+case -122:
+    return this.notifyPower(data);
+case -121:
+    return this.notifyVersion(data);
+case -120:
+    return this.notifySetTime(data);
+case -119:
+    return this.notifySetUserInfo(data);
+case -118:
+    return this.notifyGoals(data);
+case -115:
+    return this.notifyHealth(data);
+case -114:
+    return this.notifyHealthOpen(data);
+case -112:
+    return this.notifyCloseDevice(data);
+case -110:
+    return this.notifyShippingMode(data);
+case -109:
+    return this.notifyTimeOffset(data);
+case -107:
+    return this.notifyBtStatus(data);
+case -106:
+    return this.notifyCustomOnOff(data);
+case -79:
+    return this.notifyHeartRate(data);
+case -78:
+    return this.notifyContact(data);
+case -77:
+    return this.notifySos(data);
+case -76:
+    return this.notifyNotDisturb(data);
+case -75:
+    return this.notifySetClock(data);
+case -74:
+    return this.notifySetLongSit(data);
+case -73:
+    return this.notifySetDrinkWater(data);
+case -72:
+    return this.notifySendMessage(data);
+case -71:
+    return this.notifySetWeather(data);
+case 58:
+    return this.notifyMusicControl(data);
+case -69:
+    return this.notifyEventReminder(data);
+case -68:
+    return this.notifySportMode(data);
+case -67:
+    return this.notifySetWeatherSeven(data);
+case -66:
+    return this.notifyApps(data);
+case -65:
+    return this.notifyWorldClocks(data);
+case -64:
+    return this.notifyPassword(data);
+case -63:
+    return this.notifyFemaleHealth(data);
+case -62:
+    return this.notifyHealthMeasure(data);
+case 67:
+    return this.notifyHealthCalibrationStatus(data);
+case -61:
+    return this.notifyHealthCalibration(data);
+case -60:
+    return this.notifySummerWorldClock(data);
+case -59:
+    return this.notifyNfcCardInfo(data);
+case -31:
+    return this.notifySportHistory(data);
+case -30:
+    return this.notifyStepHistory(data);
+case -29:
+    return this.notifyHeartRateHistory(data);
+case -28:
+    return this.notifyBloodPressureHistory(data);
+case -27:
+    return this.notifyBloodOxygenHistory(data);
+case -26:
+    return this.notifyPressureHistory(data);
+case -25:
+    return this.notifyMetHistory(data);
+case -24:
+    return this.notifyTempHistory(data);
+case -14:
+    return this.notifyBloodSugarHistory(data);
+case -23:
+    return this.notifyValidHistoryDates(data);
+case -22:
+    return this.notifyFileInfo(data);
+case -21:
+    return this.notifyFile(data);
+case -20:
+    return this.notifyDialInfo(data);
+case -19:
+    return this.notifySwitchDial(data);
+case -18:
+    return this.notifyMai(data);
+case -16:
+    return this.notifyRealTimeOpen(data);
+case -13:
+    return this.notifyDiff(data);
+case -12:
+    return this.notifySleepHistory(data);
+case -11:
+    return this.notifyOriginSleepHistory(data);
+case -10:
+    return this.notifyRealTimeMeasure(data);
+case -9:
+    return this.notifyDebugInfo(data);
+case -8:
+    return this.notifyClearLogo(data);
+case 113:
+    return this.notifyRealTime(data);
+case 117:
+    return this.notifyOriginSleepHistory(data);
+case 17:
+    return this.notifyWristDetachment(data);
+case 127:
+    return this.notifyLog(data);
+case -1:
+    return this.notifyLog(data);
+default:
+    return this.notifyFailure();
+*/

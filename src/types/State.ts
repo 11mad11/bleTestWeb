@@ -1,29 +1,18 @@
-import type { Type } from ".";
-import { StarMax } from "../StarMax";
+import { createType } from "../StarMax";
 
-export class State implements Type<State> {
-    status: number;
-    timeFormat: number;
-    unitFormat: number;
-    tempFormat: number;
-    language: number;
-    backlighting: number;
-    screen: number;
-    wristUp: boolean;
-
-    deserialize(data: Uint8Array): State {
-        this.status = data[0];
-        this.timeFormat = data[1];
-        this.unitFormat = data[2];
-        this.tempFormat = data[3];
-        this.language = data[4];
-        this.backlighting = data[5];
-        this.screen = data[6];
-        this.wristUp = data[7]==1;
-        return this;
-    }
-
-    static requestGet() {
-        return StarMax.createRequest(2);
-    }
-}
+export default createType({
+    name: "State",
+    opId: -126,
+    deserialize(data) {
+        return {
+            status: data[0],
+            timeFormat: data[1],
+            unitFormat: data[2],
+            tempFormat: data[3],
+            language: data[4],
+            backlighting: data[5],
+            screen: data[6],
+            wristUp: data[7] == 1,
+        }
+    },
+});

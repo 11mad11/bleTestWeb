@@ -1,17 +1,12 @@
-import type { Type } from ".";
-import { StarMax } from "../StarMax";
+import { createType } from "../StarMax";
 
-export class Pair implements Type<Pair> {
-    status: number;
-    pairStatus: number;
-
-    deserialize(data: Uint8Array): Pair {
-        this.status = data[0];
-        this.pairStatus = data[1];
-        return this;
-    }
-
-    static requestPair() {
-        return StarMax.createRequest(1,[1]);
-    }
-}
+export default createType({
+    name: "Pair",
+    opId: -127,
+    deserialize(data) {
+        return {
+            status: data[0],
+            pairStatus: data[1]
+        }
+    },
+});
