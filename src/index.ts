@@ -7,13 +7,13 @@ import { StarMax } from "./StarMax";
     btn.textContent = "Pair";
 
     btn.addEventListener("click", async () => {
-        try{
+        try {
             const device = await navigator.bluetooth.requestDevice({
                 acceptAllDevices: true,
                 optionalServices: ["6e400001-b5a3-f393-e0a9-e50e24dcca9d"]
             });
             new Device(device);
-        }catch(e){
+        } catch (e) {
             log(e?.message ?? e)
         }
     });
@@ -47,10 +47,19 @@ class Device {
             notify.startNotifications();
             log("Connected")
 
-            const starmax = new StarMax(write, notify);
+            const starmax = new StarMax((data) => write.writeValueWithoutResponse(data));
+            notify.addEventListener("characteristicvaluechanged", (ev) => {
+                const array = (ev.target as any).value;
+                if (!(array instanceof DataView))
+                    throw new Error("Should have happened")
+                let value = new Uint8Array(array.buffer);
+                console.log("incoming", value.toString());
+                starmax.notify(array);
+            });
+
             (window as any).starmax = starmax;
-            starmax.on("*", (o, d) => {
-                console.log(o, d);
+            starmax.on("*", (o, d, opId) => {
+                console.log(o, d, opId);
                 log(JSON.stringify(o, undefined, 2));
                 log(d.toString())
                 if (o.status === 0)
@@ -73,7 +82,7 @@ class Device {
                 const result = await starmax.getSportHistory();
                 if ("currentSportId" in result) {
                     log(`You have done ${result.sportSecond} second of sport`);
-                }else{
+                } else {
                     log("No sport hystory to fetch")
                 }
             })

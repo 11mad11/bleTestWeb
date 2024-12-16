@@ -11,34 +11,28 @@ export class StarMax {
     private bufferView = new Uint8Array(this.buffer);
 
     constructor(
-        private write: BluetoothRemoteGATTCharacteristic,
-        private notify: BluetoothRemoteGATTCharacteristic
+        private write: (data: Uint8Array) => void
     ) {
-        notify.addEventListener("characteristicvaluechanged", (ev) => {
-            const array = (ev.target as any).value;
-            if (!(array instanceof DataView))
-                throw new Error("ds")
-            let value = new Uint8Array(array.buffer);
-            console.log("incoming", value.toString());
-            this._notify(value);
-        })
     }
 
-    _notify(rawBuffer: ArrayLike<number>) {
+    notify(rawBuffer: Uint8Array | DataView) {
+        if (rawBuffer instanceof DataView)
+            rawBuffer = new Uint8Array(rawBuffer.buffer, rawBuffer.byteOffset, rawBuffer.byteLength);
+
         if (rawBuffer[0] == 218) {
-            this.buffer.resize(rawBuffer.length);
-            this.bufferView.set(rawBuffer,0);
+            this.buffer.resize(rawBuffer.byteLength);
+            this.bufferView.set(rawBuffer, 0);
         } else {
             const offset = this.buffer.byteLength;
-            this.buffer.resize(offset+rawBuffer.length);
-            this.bufferView.set(rawBuffer,offset);
+            this.buffer.resize(offset + rawBuffer.byteLength);
+            this.bufferView.set(rawBuffer, offset);
         }
 
         const checkedData = this.bufferView.slice(0, this.bufferView.length - 2);
         const calculatedCrc = StarMax.int2byte(Crc16.calculate(checkedData), 2);
         const correctCrc = this.bufferView.slice(this.bufferView.length - 2);
 
-        if (calculatedCrc[0] != correctCrc[0] || calculatedCrc[1] != correctCrc[1]){
+        if (calculatedCrc[0] != correctCrc[0] || calculatedCrc[1] != correctCrc[1]) {
             //This may not be an error in case we do not have all the data
             //throw new Error("CRC do not match")
             console.warn("CRC do not match");
@@ -50,23 +44,25 @@ export class StarMax {
         const opId: number = checkedData[1] >= 128 ? checkedData[1] - 256 : checkedData[1];//convert to signed byte
 
         //tmp
-        console.log("received", opId, data)
         const type = TypeById[opId];
         if (!type) {
+            this.listeners.get("_")?.forEach(f => {
+                f(undefined, data, opId);
+            });
             throw new Error("No type");
         }
 
         const result = type.deserialize(data);
 
-        this.listeners.get(type.name)?.forEach(f => {
-            f(result, data);
-        });
         this.listeners.get("*")?.forEach(f => {
-            f(result, data);
+            f(result, data, opId);
+        });
+        this.listeners.get(type.name)?.forEach(f => {
+            f(result, data, opId);
         });
     }
 
-    on<T extends keyof TypeByName>(type: T | "*", callback: EventCallback<TypeByName[T]>): () => void {
+    on<T extends keyof TypeByName>(type: T, callback: EventCallback<TypeByName[T]>): () => void {
         let array = this.listeners.get(type);
         if (array) {
             array.push(callback);
@@ -84,26 +80,25 @@ export class StarMax {
 
     once<T extends keyof TypeByName>(type: T, callback: EventCallback<TypeByName[T]>): () => void {
         const remove = this.on(type, (...args) => {
-            callback(...args);
             remove();
+            callback(...args);
         });
         return remove;
     }
 
-    onceAsync<T extends keyof TypeByName>(type: T): Promise<TypeByName[T]> {
+    onceAsync<T extends keyof TypeByName>(type: T): Promise<TypeByName[T]["type"]> {
         return new Promise((resolve) => {
-            const remove = this.on(type, (...args) => {
+            this.once(type, (...args) => {
                 resolve(args[0]);
-                remove();
             });
         })
     }
 
-    private sendRequest(reqId: number, data: number[] = []) {
+    sendCustomRequest(reqId: number, data: number[] = []) {
         const length = data?.length;
         const input = new Uint8Array([218, reqId, length & 255, length >> 8 & 255, ...data]);
         const req = StarMax.merge(input, StarMax.int2byte(Crc16.calculate(input), 2));
-        return this.write.writeValueWithoutResponse(req);
+        return this.write(req);
     }
 
     //// Request section
@@ -114,12 +109,12 @@ export class StarMax {
      * @returns 
      */
     pair() {
-        this.sendRequest(1, [1]);
+        this.sendCustomRequest(1, [1]);
         return this.onceAsync("Pair")
     }
 
     getState() {
-        this.sendRequest(2);
+        this.sendCustomRequest(2);
         return this.onceAsync("State")
     }
 
@@ -135,12 +130,12 @@ export class StarMax {
             date.getSeconds(), // Seconds
             date.getTimezoneOffset() / -60 // Timezone offset in hours (negated)
         ];
-        this.sendRequest(8, values);
+        this.sendCustomRequest(8, values);
         return this.onceAsync("SetTime")
     }
 
     getSportHistory() {
-        this.sendRequest(97, [0]);
+        this.sendCustomRequest(97, [0]);
         return this.onceAsync("SportHistory")
     }
 
@@ -204,14 +199,30 @@ const TypeById = TypeDefs.reduce((a, v) => {
 
 ////
 
-type Types = ReturnType<TypeDefs[number]["deserialize"]>;
-
 type NumericKeys<T> = Exclude<keyof T, keyof any[]>;
 type TypeByName = {
-    [key in NumericKeys<TypeDefs> as TypeDefs[key]["name"]]: ReturnType<TypeDefs[key]["deserialize"]>
+    [key in NumericKeys<TypeDefs> as TypeDefs[key]["name"]]: {
+        type: ReturnType<TypeDefs[key]["deserialize"]>
+    } & TypeDefs[key]
+} & {
+    "*": {
+        [key in NumericKeys<TypeDefs>]: {
+            type: ReturnType<TypeDefs[key]["deserialize"]>,
+            opId: TypeDefs[key]["opId"]
+        }
+    }[NumericKeys<TypeDefs>],
+    "_":{
+        type: null,
+        opId: number
+    }
 };
 
-type EventCallback<T extends Types> = (obj: T, data: Uint8Array) => void;
+/**
+ * use * for all
+ * 
+ * use _ for error
+ */
+type EventCallback<T extends TypeByName[keyof TypeByName]> = (obj: T["type"], data: Uint8Array, type: T["opId"]) => void;
 
 type Requests = Record<string, (this: StarMax) => Promise<any>>;
 type TypeDef<N extends string, R extends Requests, T> = {
