@@ -40,8 +40,7 @@ import { StarMax } from "@11mad11/starmax";
     const starmax = new StarMax(data => write.writeValueWithoutResponse(data));
 
     notify.addEventListener("characteristicvaluechanged", event => {
-        const value = new Uint8Array((event.target as BluetoothRemoteGATTCharacteristic).value.buffer);
-        starmax.notify(value);
+        starmax.notify((event.target as any).value);
     });
     await notify.startNotifications();
 
@@ -126,7 +125,7 @@ A demo implementation using this SDK is provided in `demo/index.ts` and `index.h
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/starmax-sdk.git
+   git clone https://github.com/11mad11/starmax.git
    ```
 2. Install dependencies:
    ```bash
