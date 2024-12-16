@@ -2,7 +2,7 @@
   "name": "@11mad11/starmax",
   "version": "1.0.1",
   "type": "module",
-  "files":["lib"],
+  "files":["lib","README.md"],
   "main":"./lib/starmax.umd.js",
   "module":"./lib/starmax.js",
   "exports": {
