@@ -1,10 +1,13 @@
 {
   "name": "@11mad11/starmax",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
-  "files":["lib","README.md"],
-  "main":"./lib/starmax.umd.js",
-  "module":"./lib/starmax.js",
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "main": "./lib/starmax.umd.js",
+  "module": "./lib/starmax.js",
   "exports": {
     ".": {
       "import": "./dist/starmax.js",
