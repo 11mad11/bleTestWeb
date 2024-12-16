@@ -1,6 +1,6 @@
 {
   "name": "@11mad11/starmax",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "files":["lib"],
   "main":"./lib/starmax.umd.js",
