@@ -7,6 +7,8 @@ import State from "./types/State";
 
 export class StarMax {
     private listeners = new Map<string, EventCallback<any>[] | undefined>();
+    private buffer = new ArrayBuffer(1024, { maxByteLength: 1_048_576 });
+    private bufferView = new Uint8Array(this.buffer);
 
     constructor(
         private write: BluetoothRemoteGATTCharacteristic,
@@ -18,20 +20,30 @@ export class StarMax {
                 throw new Error("ds")
             let value = new Uint8Array(array.buffer);
             console.log("incoming", value.toString());
-            this._notify(value)
+            this._notify(value);
         })
     }
 
-    _notify(rawBuffer: Uint8Array) {
-        if (rawBuffer[0] != 218)
-            throw new Error("not the start or garbage");//TODO merge data, see: AbstractStarmaxNotify.notify
+    _notify(rawBuffer: ArrayLike<number>) {
+        if (rawBuffer[0] == 218) {
+            this.buffer.resize(rawBuffer.length);
+            this.bufferView.set(rawBuffer,0);
+        } else {
+            const offset = this.buffer.byteLength;
+            this.buffer.resize(offset+rawBuffer.length);
+            this.bufferView.set(rawBuffer,offset);
+        }
 
-        const checkedData = rawBuffer.slice(0, rawBuffer.length - 2);
+        const checkedData = this.bufferView.slice(0, this.bufferView.length - 2);
         const calculatedCrc = StarMax.int2byte(Crc16.calculate(checkedData), 2);
-        const correctCrc = rawBuffer.slice(rawBuffer.length - 2);
+        const correctCrc = this.bufferView.slice(this.bufferView.length - 2);
 
-        if (calculatedCrc[0] != correctCrc[0] || calculatedCrc[1] != correctCrc[1])
-            throw new Error("CRC do not match")
+        if (calculatedCrc[0] != correctCrc[0] || calculatedCrc[1] != correctCrc[1]){
+            //This may not be an error in case we do not have all the data
+            //throw new Error("CRC do not match")
+            console.warn("CRC do not match");
+            return;
+        }
 
         const length: number = StarMax.byteArray2Sum(checkedData.slice(2, 4));
         const data: Uint8Array = checkedData.slice(4, Math.min(length + 4, checkedData.length));
@@ -45,12 +57,12 @@ export class StarMax {
         }
 
         const result = type.deserialize(data);
-        
-        this.listeners.get(type.name)?.forEach(f=>{
-            f(result,data);
+
+        this.listeners.get(type.name)?.forEach(f => {
+            f(result, data);
         });
-        this.listeners.get("*")?.forEach(f=>{
-            f(result,data);
+        this.listeners.get("*")?.forEach(f => {
+            f(result, data);
         });
     }
 
@@ -79,7 +91,7 @@ export class StarMax {
     }
 
     onceAsync<T extends keyof TypeByName>(type: T): Promise<TypeByName[T]> {
-        return new Promise((resolve)=>{
+        return new Promise((resolve) => {
             const remove = this.on(type, (...args) => {
                 resolve(args[0]);
                 remove();
@@ -90,7 +102,7 @@ export class StarMax {
     private sendRequest(reqId: number, data: number[] = []) {
         const length = data?.length;
         const input = new Uint8Array([218, reqId, length & 255, length >> 8 & 255, ...data]);
-        const req =  StarMax.merge(input, StarMax.int2byte(Crc16.calculate(input), 2));
+        const req = StarMax.merge(input, StarMax.int2byte(Crc16.calculate(input), 2));
         return this.write.writeValueWithoutResponse(req);
     }
 
@@ -101,17 +113,17 @@ export class StarMax {
      * Optional, will show a pairing screen
      * @returns 
      */
-    pair(){
-        this.sendRequest(1,[1]);
+    pair() {
+        this.sendRequest(1, [1]);
         return this.onceAsync("Pair")
     }
 
-    getState(){
+    getState() {
         this.sendRequest(2);
         return this.onceAsync("State")
     }
 
-    setTime(date = new Date()){
+    setTime(date = new Date()) {
         const year = date.getFullYear();
         const values = [
             year & 0xFF,           // Lower byte of the year
@@ -127,8 +139,8 @@ export class StarMax {
         return this.onceAsync("SetTime")
     }
 
-    getSportHistory(){
-        this.sendRequest(97,[0]);
+    getSportHistory() {
+        this.sendRequest(97, [0]);
         return this.onceAsync("SportHistory")
     }
 
@@ -181,14 +193,14 @@ export class StarMax {
 ////
 
 const TypeDefs = [
-    State,Pair,SetTime,SportHistory,HeartRate
+    State, Pair, SetTime, SportHistory, HeartRate
 ] as const
 type TypeDefs = typeof TypeDefs;
 
-const TypeById = TypeDefs.reduce((a,v)=>{
+const TypeById = TypeDefs.reduce((a, v) => {
     a[v.opId] = v
     return a;
-},{} as Record<number,TypeDefs[number]>)
+}, {} as Record<number, TypeDefs[number]>)
 
 ////
 
